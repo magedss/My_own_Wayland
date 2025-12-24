@@ -7,7 +7,9 @@
 #include <stdint.h>
 #include <assert.h>
 #include <unistd.h>
+#include "wayland_stuff.h"
 
+ static uint32_t wayland_current_id = 1;
 static int wayland_display_connect(){
     char *xdg_runtime_dir = getenv("XDG_RUNTIME_DIR");
     u_int64_t xdg_len= strlen(xdg_runtime_dir); 
@@ -40,7 +42,40 @@ static int wayland_display_connect(){
         exit(errno);
     return fd;
 }
+static uint32_t wayland_wl_display_get_registry(int fd){
+    uint64_t msg_len=0;
+    char msg [128]="";
+    buf_write_u32(msg,&msg_len,sizeof(msg_len),wayland_display_object_id);
+    buf_write_u16(msg, &msg_size, sizeof(msg),wayland_wl_display_get_registry_opcode);
+    buf_write_u16(msg, &msg_size, sizeof(msg),wayland_header_size+sizeof(wayland_current_id));
+    wayland_current_id++;
+    buf_write_u32(msg, &msg_size, sizeof(msg), wayland_current_id);
+    send(fd,msg,msg_len,MSG_DONTWAIT);
+    printf("-> wl_display@%u.get_registry: wl_registry=%u\n",
+    wayland_display_object_id, wayland_current_id);
 
+   return wayland_current_id;
+}
+static void generate_name(char *name){
+    for(uint64_t i = 1 ; i < cstring(name);i++){
+       name[i]= ((double)rand())/(double)RAND_MAX*26+'a';
+    }
+}
+static void create_shared_memory(uint64_t size, struct state_t *state ){
+    char name[255]="/";
+    generate_name(name);
+   int fd = shm_open(name, O_RDWR | O_EXCL | O_CREAT, 0600);
+    if(fd!=-1&&shm_unlink(name)!=-1&&ftruncate(fd,size)!=-1){
+        state.shm_pool_date =mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        assert(state.shm_pool_data==NULL);
+        state.shm_fd=fd;
+
+    }
+    else
+        exit(errno);
+    
+
+}
 int main(){
     return wayland_display_connect();
 }
