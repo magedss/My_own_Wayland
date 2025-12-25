@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include <assert.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include "wayland_stuff.h"
 
  static uint32_t wayland_current_id = 1;
@@ -46,10 +48,10 @@ static uint32_t wayland_wl_display_get_registry(int fd){
     uint64_t msg_len=0;
     char msg [128]="";
     buf_write_u32(msg,&msg_len,sizeof(msg_len),wayland_display_object_id);
-    buf_write_u16(msg, &msg_size, sizeof(msg),wayland_wl_display_get_registry_opcode);
-    buf_write_u16(msg, &msg_size, sizeof(msg),wayland_header_size+sizeof(wayland_current_id));
+    buf_write_u16(msg, &msg_len, sizeof(msg),wayland_wl_display_get_registry_opcode);
+    buf_write_u16(msg, &msg_len, sizeof(msg),wayland_header_size+sizeof(wayland_current_id));
     wayland_current_id++;
-    buf_write_u32(msg, &msg_size, sizeof(msg), wayland_current_id);
+    buf_write_u32(msg, &msg_len, sizeof(msg), wayland_current_id);
     send(fd,msg,msg_len,MSG_DONTWAIT);
     printf("-> wl_display@%u.get_registry: wl_registry=%u\n",
     wayland_display_object_id, wayland_current_id);
@@ -66,17 +68,78 @@ static void create_shared_memory(uint64_t size, struct state_t *state ){
     generate_name(name);
    int fd = shm_open(name, O_RDWR | O_EXCL | O_CREAT, 0600);
     if(fd!=-1&&shm_unlink(name)!=-1&&ftruncate(fd,size)!=-1){
-        state.shm_pool_date =mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        assert(state.shm_pool_data==NULL);
-        state.shm_fd=fd;
+        state->shm_pool_data =mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        assert(state->shm_pool_data!=NULL);
+        state->shm_fd=fd;
 
     }
     else
-        exit(errno);
+        exit(errno); //not accurate but idon't care 
     
 
 }
+static void wayland_handle_msg(int fd,char * msg,uint64_t *msg_len,struct state_t *current_state){
+ 
+
+   uint32_t object_id = buf_read_u32(msg, msg_len);
+   uint16_t opcode = buf_read_u16(msg, msg_len);
+   uint16_t announced_size = buf_read_u16(msg, msg_len);
+   uint32_t header_size =sizeof(object_id) + sizeof(opcode) + sizeof(announced_size);
+   if(object_id==current_state->wl_registry&&opcode==wayland_wl_registry_event_global){
+     uint32_t name = buf_read_u32(msg, msg_len);
+     uint32_t interface_len = buf_read_u32(msg, msg_len);
+     uint32_t padded_interface_len = roundup_4(interface_len);
+     char interface[255];
+     buf_read_n(msg,msg_len,interface,padded_interface_len);
+     uint32_t version = buf_read_u32(msg, msg_len);
+        char wl_shm_interface[] = "wl_shm";
+
+     if (strcmp(wl_shm_interface, interface) == 0) {
+
+       current_state->wl_shm = wayland_wl_registry_bind(
+    fd, current_state->wl_registry, name, interface, interface_len, version);
+     }
+
+ 
+
+     char xdg_wm_base_interface[] = "xdg_wm_base";
+
+     if (strcmp(xdg_wm_base_interface, interface) == 0) {
+
+       current_state->xdg_wm_base = wayland_wl_registry_bind(
+
+           fd, current_state->wl_registry, name, interface, interface_len, version);
+
+     }
+
+ 
+
+     char wl_compositor_interface[] = "wl_compositor";
+
+     if (strcmp(wl_compositor_interface, interface) == 0) {
+
+       current_state->wl_compositor = wayland_wl_registry_bind(
+
+        fd, current_state->wl_registry, name, interface, interface_len, version);
+     }
+     return;
+
+   }
+
+
+
+
+}
 int main(){
-    return wayland_display_connect();
+    int fd= wayland_display_connect();
+    struct state_t current_state = {
+        .wl_registry = wayland_wl_display_get_registry(fd)
+    };
+    create_shared_memory(255,&current_state);
+    while(1){
+        char msg[255];
+           int read_so_far =recv(fd,msg,sizeof(msg),0);
+           wayland_handle_msg(msg,&read_so_far,&current_state);
+    }
 }
 
